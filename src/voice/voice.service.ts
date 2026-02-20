@@ -14,7 +14,7 @@ export class VoiceService {
       this.configService.get<string>('AGORA_APP_CERTIFICATE') || '';
   }
 
-  // Agora RTC 토큰 생성 (유효 시간: 600초 = 10분)
+  // Agora RTC 토큰 생성 (매칭: 600초, 대화방: 3600초)
   async generateToken(
     userId: string,
     channelId: string,
@@ -30,7 +30,9 @@ export class VoiceService {
     // userId 해시 → 숫자 UID 변환 (Agora는 숫자 UID 사용)
     const uid = this.generateNumericUid(userId);
 
-    const expirationTimeInSeconds = 600; // 10분
+    // 대화방(room_)은 1시간, 매칭(10mb-)은 10분
+    const isRoom = channelId.startsWith('room_');
+    const expirationTimeInSeconds = isRoom ? 3600 : 600;
     const currentTimestamp = Math.floor(Date.now() / 1000);
     const privilegeExpiredTs = currentTimestamp + expirationTimeInSeconds;
 

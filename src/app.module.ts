@@ -9,6 +9,7 @@ import { UsersModule } from './users/users.module';
 import { MatchModule } from './match/match.module';
 import { VoiceModule } from './voice/voice.module';
 import { ReportsModule } from './reports/reports.module';
+import { RoomsModule } from './rooms/rooms.module';
 import { SupabaseModule } from './common/supabase/supabase.module';
 import { RedisModule } from './common/redis/redis.module';
 
@@ -45,6 +46,7 @@ import { RedisModule } from './common/redis/redis.module';
     MatchModule,
     VoiceModule,
     ReportsModule,
+    RoomsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
