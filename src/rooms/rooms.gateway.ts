@@ -1,4 +1,4 @@
-// 대화방 WebSocket 게이트웨이 (입장/퇴장 실시간 동기화, 연결 해제 시 자동 퇴장)
+// 대화방 WebSocket 게이트웨이 (입장/퇴장 실시간 동기화, 참여자 목록, 자동 퇴장)
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -11,6 +11,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import { RoomsService } from './rooms.service';
 import { AuthService } from '../auth/auth.service';
+import { SupabaseService } from '../common/supabase/supabase.service';
 
 @WebSocketGateway({
   cors: {
@@ -26,13 +27,16 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   // socketId → userId
   private connectedUsers: Map<string, string> = new Map();
+  // userId → nickname (빠른 조회용 캐시)
+  private userNicknames: Map<string, string> = new Map();
 
   constructor(
     private roomsService: RoomsService,
     private authService: AuthService,
+    private supabaseService: SupabaseService,
   ) {}
 
-  // 소켓 연결 시 JWT 검증
+  // 소켓 연결 시 JWT 검증 + 닉네임 캐시
   async handleConnection(client: Socket) {
     try {
       const token = client.handshake.auth.token;
@@ -42,23 +46,34 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
       const user = await this.authService.verifyToken(token);
       this.connectedUsers.set(client.id, user.userId);
+
+      // 닉네임 캐시
+      try {
+        const userData = await this.supabaseService.getUserById(user.userId);
+        this.userNicknames.set(user.userId, userData.nickname ?? '알 수 없음');
+      } catch {
+        this.userNicknames.set(user.userId, '알 수 없음');
+      }
     } catch {
       client.disconnect();
     }
   }
 
-  // 소켓 연결 해제 시 자동 퇴장
+  // 소켓 연결 해제 시 자동 퇴장 + 참여자 목록 브로드캐스트
   async handleDisconnect(client: Socket) {
     const userId = this.connectedUsers.get(client.id);
     if (!userId) return;
 
+    const nickname = this.userNicknames.get(userId) ?? '알 수 없음';
     this.connectedUsers.delete(client.id);
+    this.userNicknames.delete(userId);
 
     try {
       const leftRoomIds = await this.roomsService.leaveAllRooms(userId);
-      // 퇴장한 방들의 인원수 브로드캐스트
       for (const roomId of leftRoomIds) {
         await this.broadcastRoomUpdate(roomId);
+        await this.broadcastParticipants(roomId);
+        this.server.emit('room:user_left', { roomId, user: { userId, nickname } });
       }
     } catch (err) {
       console.error('[RoomsGW] 자동 퇴장 실패:', err);
@@ -77,6 +92,14 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     try {
       await this.roomsService.joinRoom(userId, data.roomId);
       await this.broadcastRoomUpdate(data.roomId);
+      await this.broadcastParticipants(data.roomId);
+
+      const nickname = this.userNicknames.get(userId) ?? '알 수 없음';
+      this.server.emit('room:user_joined', {
+        roomId: data.roomId,
+        user: { userId, nickname },
+      });
+
       client.emit('room:joined', { roomId: data.roomId });
     } catch (err) {
       client.emit('room:error', {
@@ -95,8 +118,16 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!userId) return;
 
     try {
+      const nickname = this.userNicknames.get(userId) ?? '알 수 없음';
       await this.roomsService.leaveRoom(userId, data.roomId);
       await this.broadcastRoomUpdate(data.roomId);
+      await this.broadcastParticipants(data.roomId);
+
+      this.server.emit('room:user_left', {
+        roomId: data.roomId,
+        user: { userId, nickname },
+      });
+
       client.emit('room:left', { roomId: data.roomId });
     } catch (err) {
       client.emit('room:error', {
@@ -117,7 +148,17 @@ export class RoomsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
       }
     } catch (err) {
-      console.error('[RoomsGW] 브로드캐스트 실패:', err);
+      console.error('[RoomsGW] 인원수 브로드캐스트 실패:', err);
+    }
+  }
+
+  // 참여자 목록 브로드캐스트
+  private async broadcastParticipants(roomId: string) {
+    try {
+      const participants = await this.roomsService.getRoomParticipants(roomId);
+      this.server.emit('room:participants', { roomId, participants });
+    } catch (err) {
+      console.error('[RoomsGW] 참여자 브로드캐스트 실패:', err);
     }
   }
 }

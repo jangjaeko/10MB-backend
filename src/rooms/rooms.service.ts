@@ -104,6 +104,38 @@ export class RoomsService {
     return { success: true };
   }
 
+  // 대화방 참여자 목록 조회 (닉네임, 관심사 포함)
+  async getRoomParticipants(roomId: string) {
+    const client = this.supabaseService.getClient();
+
+    const { data, error } = await client
+      .from('room_participants')
+      .select('user_id, joined_at')
+      .eq('room_id', roomId)
+      .order('joined_at', { ascending: true });
+
+    if (error) throw error;
+    if (!data || data.length === 0) return [];
+
+    // 유저 정보 일괄 조회
+    const userIds = data.map((p: any) => p.user_id);
+    const { data: users } = await client
+      .from('users')
+      .select('id, nickname, interests')
+      .in('id', userIds);
+
+    const userMap = new Map((users ?? []).map((u: any) => [u.id, u]));
+
+    return data.map((p: any) => {
+      const user = userMap.get(p.user_id);
+      return {
+        userId: p.user_id,
+        nickname: user?.nickname ?? '알 수 없음',
+        interests: user?.interests ?? [],
+      };
+    });
+  }
+
   // 현재 참여 중인 모든 방에서 퇴장 (disconnect 시에도 호출)
   async leaveAllRooms(userId: string): Promise<string[]> {
     const client = this.supabaseService.getClient();
