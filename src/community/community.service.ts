@@ -211,10 +211,10 @@ export class CommunityService {
 
     const client = this.supabaseService.getClient();
 
-    // 게시글 존재 확인
+    // 게시글 존재 확인 (작성자 ID도 필요)
     const { data: post, error: postError } = await client
       .from('posts')
-      .select('id')
+      .select('id, user_id, title')
       .eq('id', postId)
       .single();
 
@@ -235,11 +235,25 @@ export class CommunityService {
 
     if (error) throw error;
 
-    // comment_count +1
+    // comment_count 갱신
     await client
       .from('posts')
       .update({ comment_count: (await this.getCommentCount(postId)) })
       .eq('id', postId);
+
+    // 알림 생성 (본인 글에 본인이 댓글 달면 제외)
+    if (post.user_id !== userId) {
+      const commenterMap = await this.getUserNicknameMap([userId]);
+      const commenterNickname = commenterMap.get(userId) ?? '알 수 없음';
+
+      await client.from('notifications').insert({
+        user_id: post.user_id,
+        type: 'comment',
+        title: '새 댓글',
+        body: `${commenterNickname}님이 "${post.title}" 글에 댓글을 남겼어요`,
+        data: { postId, commentId: comment.id, commenterNickname },
+      });
+    }
 
     return comment;
   }

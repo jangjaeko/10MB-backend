@@ -75,7 +75,7 @@ export class CommunityController {
   }
 
   // 댓글 삭제 (본인만)
-  @Delete('comments/:commentId')
+  @Delete(':postId/comments/:commentId')
   async deleteComment(@Req() req: any, @Param('commentId') commentId: string) {
     return this.communityService.deleteComment(req.user.userId, commentId);
   }
