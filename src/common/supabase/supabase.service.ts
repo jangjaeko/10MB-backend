@@ -144,6 +144,7 @@ export class SupabaseService implements OnModuleInit {
       started_at: string;
       ends_at: string;
       actual_ended_at: string;
+      extended: boolean;
     }>,
   ) {
     const { data, error } = await this.supabase

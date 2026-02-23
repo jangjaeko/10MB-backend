@@ -124,6 +124,28 @@ export class MatchTimerService implements OnModuleDestroy {
     return this.timers.size;
   }
 
+  // 타이머 연장 (남은 시간에 seconds 추가 + DB ends_at 갱신)
+  async extendTimer(sessionId: string, seconds: number): Promise<number | null> {
+    const entry = this.timers.get(sessionId);
+    if (!entry) return null;
+
+    entry.remainingSeconds += seconds;
+
+    // DB ends_at 갱신
+    const newEndsAt = new Date(Date.now() + entry.remainingSeconds * 1000);
+    try {
+      await this.supabaseService.updateMatchSession(sessionId, {
+        ends_at: newEndsAt.toISOString(),
+        extended: true,
+      });
+    } catch (err) {
+      console.error('[Timer] 연장 DB 업데이트 실패:', err);
+    }
+
+    console.log(`[Timer] 연장: ${sessionId} (+${seconds}초, 남은: ${entry.remainingSeconds}초)`);
+    return entry.remainingSeconds;
+  }
+
   // 인터벌 정리 (내부용, DB 업데이트 없음)
   private clearTimer(sessionId: string): boolean {
     const entry = this.timers.get(sessionId);

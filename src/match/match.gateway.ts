@@ -13,6 +13,7 @@ import { MatchService } from './match.service';
 import { MatchTimerService } from './match-timer.service';
 import { AuthService } from '../auth/auth.service';
 import { UsersService } from '../users/users.service';
+import { SupabaseService } from '../common/supabase/supabase.service';
 
 // 활성 세션 정보 (파트너 추적용)
 interface ActiveSessionInfo {
@@ -40,12 +41,15 @@ export class MatchGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private activeSessions: Map<string, ActiveSessionInfo> = new Map();
   // userId → 요청 타임스탬프 배열 (Rate Limit용)
   private matchRateLimit: Map<string, number[]> = new Map();
+  // sessionId → 연장 동의 유저 Set (양쪽 동의 추적)
+  private extendRequests: Map<string, Set<string>> = new Map();
 
   constructor(
     private matchService: MatchService,
     private matchTimerService: MatchTimerService,
     private authService: AuthService,
     private usersService: UsersService,
+    private supabaseService: SupabaseService,
   ) {}
 
   // 소켓 연결 시 JWT 토큰 검증
@@ -181,6 +185,102 @@ export class MatchGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!userId) return;
 
     await this.notifyPartnerLeft(userId);
+  }
+
+  // match:extend_request — 연장 요청 (요청자 → 상대방에게 전달)
+  @SubscribeMessage('match:extend_request')
+  async handleExtendRequest(@ConnectedSocket() client: Socket) {
+    const userId = this.connectedUsers.get(client.id);
+    if (!userId) return;
+
+    const sessionId = this.userSessions.get(userId);
+    if (!sessionId) return;
+
+    // 1회 제한: DB extended 플래그 확인
+    try {
+      const session = await this.supabaseService.getMatchSession(sessionId);
+      if (session.extended) {
+        client.emit('match:error', { message: '이미 연장이 사용되었습니다' });
+        return;
+      }
+    } catch (err) {
+      console.error('[Extend] 세션 조회 실패:', err);
+      return;
+    }
+
+    // 연장 요청 추적에 요청자 추가
+    if (!this.extendRequests.has(sessionId)) {
+      this.extendRequests.set(sessionId, new Set());
+    }
+    this.extendRequests.get(sessionId)!.add(userId);
+
+    // 상대방에게 연장 요청 전달
+    const sessionInfo = this.activeSessions.get(sessionId);
+    if (sessionInfo) {
+      const partnerIds = sessionInfo.userIds.filter((id) => id !== userId);
+      for (const partnerId of partnerIds) {
+        this.emitToUser(partnerId, 'match:extend_request', {});
+      }
+    }
+
+    console.log(`[Extend] 요청: ${userId} (세션: ${sessionId})`);
+  }
+
+  // match:extend_response — 연장 응답 (수락/거절)
+  @SubscribeMessage('match:extend_response')
+  async handleExtendResponse(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() data: { accept: boolean },
+  ) {
+    const userId = this.connectedUsers.get(client.id);
+    if (!userId) return;
+
+    const sessionId = this.userSessions.get(userId);
+    if (!sessionId) return;
+
+    const sessionInfo = this.activeSessions.get(sessionId);
+    if (!sessionInfo) return;
+
+    if (!data.accept) {
+      // 거절: 요청자에게 거절 알림 전송
+      const requesters = this.extendRequests.get(sessionId);
+      if (requesters) {
+        for (const requesterId of requesters) {
+          if (requesterId !== userId) {
+            this.emitToUser(requesterId, 'match:extend_rejected', {});
+          }
+        }
+      }
+      this.extendRequests.delete(sessionId);
+      console.log(`[Extend] 거절: ${userId} (세션: ${sessionId})`);
+      return;
+    }
+
+    // 수락: 응답자도 동의 Set에 추가
+    if (!this.extendRequests.has(sessionId)) {
+      this.extendRequests.set(sessionId, new Set());
+    }
+    this.extendRequests.get(sessionId)!.add(userId);
+
+    const agreed = this.extendRequests.get(sessionId)!;
+    const allAgreed = sessionInfo.userIds.every((uid) => agreed.has(uid));
+
+    if (allAgreed) {
+      // 양쪽 동의: 타이머 연장
+      const addedSeconds = 300;
+      const newRemaining = await this.matchTimerService.extendTimer(sessionId, addedSeconds);
+
+      // 양쪽에게 승인 알림
+      for (const uid of sessionInfo.userIds) {
+        this.emitToUser(uid, 'match:extend_approved', {
+          addedSeconds,
+          newRemaining: newRemaining ?? 0,
+        });
+      }
+
+      this.extendRequests.delete(sessionId);
+      console.log(`[Extend] 승인: 세션 ${sessionId} (+${addedSeconds}초)`);
+    }
   }
 
   // user:online — 온라인 상태 갱신
