@@ -22,6 +22,7 @@ export class CommunityController {
   // 게시글 목록 조회
   @Get()
   async getPosts(
+    @Req() req: any,
     @Query('category') category?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
@@ -30,6 +31,7 @@ export class CommunityController {
       category,
       cursor,
       limit: limit ? parseInt(limit, 10) : 20,
+      userId: req.user?.userId,
     });
   }
 

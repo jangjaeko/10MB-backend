@@ -19,6 +19,7 @@ export class CommunityService {
     category?: string;
     cursor?: string;
     limit?: number;
+    userId?: string;
   }) {
     const client = this.supabaseService.getClient();
     const limit = Math.min(options.limit || 20, 50);
@@ -50,9 +51,22 @@ export class CommunityService {
     const userIds = [...new Set(posts.map((p: any) => p.user_id))];
     const userMap = await this.getUserNicknameMap(userIds);
 
+    // 현재 유저의 좋아요 여부 일괄 조회
+    const likedPostIds = new Set<string>();
+    if (options.userId && posts.length > 0) {
+      const postIds = posts.map((p: any) => p.id);
+      const { data: likes } = await client
+        .from('post_likes')
+        .select('post_id')
+        .eq('user_id', options.userId)
+        .in('post_id', postIds);
+      (likes ?? []).forEach((l: any) => likedPostIds.add(l.post_id));
+    }
+
     const result = posts.map((p: any) => ({
       ...p,
       authorNickname: userMap.get(p.user_id) ?? '알 수 없음',
+      isLiked: likedPostIds.has(p.id),
     }));
 
     return {
@@ -236,23 +250,28 @@ export class CommunityService {
     if (error) throw error;
 
     // comment_count 갱신
-    await client
+    const { error: countError } = await client
       .from('posts')
       .update({ comment_count: (await this.getCommentCount(postId)) })
       .eq('id', postId);
+    if (countError) console.error('[10MB] comment_count 갱신 실패:', countError);
 
     // 알림 생성 (본인 글에 본인이 댓글 달면 제외)
     if (post.user_id !== userId) {
-      const commenterMap = await this.getUserNicknameMap([userId]);
-      const commenterNickname = commenterMap.get(userId) ?? '알 수 없음';
+      try {
+        const commenterMap = await this.getUserNicknameMap([userId]);
+        const commenterNickname = commenterMap.get(userId) ?? '알 수 없음';
 
-      await client.from('notifications').insert({
-        user_id: post.user_id,
-        type: 'comment',
-        title: '새 댓글',
-        body: `${commenterNickname}님이 "${post.title}" 글에 댓글을 남겼어요`,
-        data: { postId, commentId: comment.id, commenterNickname },
-      });
+        await client.from('notifications').insert({
+          user_id: post.user_id,
+          type: 'comment',
+          title: '새 댓글',
+          body: `${commenterNickname}님이 "${post.title}" 글에 댓글을 남겼어요`,
+          data: { postId, commentId: comment.id, commenterNickname },
+        });
+      } catch (notifErr) {
+        console.error('[10MB] 댓글 알림 생성 실패:', notifErr);
+      }
     }
 
     return comment;
@@ -283,10 +302,11 @@ export class CommunityService {
     if (error) throw error;
 
     // comment_count 갱신
-    await client
+    const { error: countError } = await client
       .from('posts')
       .update({ comment_count: (await this.getCommentCount(comment.post_id)) })
       .eq('id', comment.post_id);
+    if (countError) console.error('[10MB] comment_count 갱신 실패:', countError);
 
     return { success: true };
   }
@@ -316,10 +336,12 @@ export class CommunityService {
 
     if (existing) {
       // 좋아요 취소
-      await client.from('post_likes').delete().eq('id', existing.id);
+      const { error: delErr } = await client.from('post_likes').delete().eq('id', existing.id);
+      if (delErr) throw delErr;
     } else {
       // 좋아요 추가
-      await client.from('post_likes').insert({ post_id: postId, user_id: userId });
+      const { error: insErr } = await client.from('post_likes').insert({ post_id: postId, user_id: userId });
+      if (insErr) throw insErr;
     }
 
     // like_count 갱신
@@ -328,10 +350,11 @@ export class CommunityService {
       .select('*', { count: 'exact', head: true })
       .eq('post_id', postId);
 
-    await client
+    const { error: updateErr } = await client
       .from('posts')
       .update({ like_count: count ?? 0 })
       .eq('id', postId);
+    if (updateErr) console.error('[10MB] like_count 갱신 실패:', updateErr);
 
     return { liked: !existing, likeCount: count ?? 0 };
   }
