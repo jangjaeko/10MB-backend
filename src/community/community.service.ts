@@ -6,13 +6,17 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase/supabase.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 // 카테고리 유효성 검증용
 const VALID_CATEGORIES = ['free', 'concern', 'humor', 'topic', 'review'];
 
 @Injectable()
 export class CommunityService {
-  constructor(private supabaseService: SupabaseService) {}
+  constructor(
+    private supabaseService: SupabaseService,
+    private notificationsService: NotificationsService,
+  ) {}
 
   // 게시글 목록 조회 (커서 기반 페이지네이션)
   async getPosts(options: {
@@ -256,14 +260,13 @@ export class CommunityService {
       .eq('id', postId);
     if (countError) console.error('[10MB] comment_count 갱신 실패:', countError);
 
-    // 알림 생성 (본인 글에 본인이 댓글 달면 제외)
+    // 알림 생성 + 실시간 전송 (본인 글에 본인이 댓글 달면 제외)
     if (post.user_id !== userId) {
       try {
         const commenterMap = await this.getUserNicknameMap([userId]);
         const commenterNickname = commenterMap.get(userId) ?? '알 수 없음';
 
-        await client.from('notifications').insert({
-          user_id: post.user_id,
+        await this.notificationsService.createNotification(post.user_id, {
           type: 'comment',
           title: '새 댓글',
           body: `${commenterNickname}님이 "${post.title}" 글에 댓글을 남겼어요`,
@@ -315,10 +318,10 @@ export class CommunityService {
   async toggleLike(userId: string, postId: string) {
     const client = this.supabaseService.getClient();
 
-    // 게시글 존재 확인
+    // 게시글 존재 + 작성자 조회 (알림용)
     const { data: post, error: postError } = await client
       .from('posts')
-      .select('id')
+      .select('id, user_id, title, like_count')
       .eq('id', postId)
       .single();
 
@@ -342,6 +345,23 @@ export class CommunityService {
       // 좋아요 추가
       const { error: insErr } = await client.from('post_likes').insert({ post_id: postId, user_id: userId });
       if (insErr) throw insErr;
+
+      // 첫 번째 좋아요일 때만 알림 (본인 글 제외, like_count가 0이었던 경우)
+      if (post.user_id !== userId && post.like_count === 0) {
+        try {
+          const likerMap = await this.getUserNicknameMap([userId]);
+          const likerNickname = likerMap.get(userId) ?? '알 수 없음';
+
+          await this.notificationsService.createNotification(post.user_id, {
+            type: 'like',
+            title: '좋아요',
+            body: `${likerNickname}님이 "${post.title}" 글에 좋아요를 눌렀어요`,
+            data: { postId, likerNickname },
+          });
+        } catch (notifErr) {
+          console.error('[10MB] 좋아요 알림 생성 실패:', notifErr);
+        }
+      }
     }
 
     // like_count 갱신

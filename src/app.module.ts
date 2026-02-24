@@ -11,6 +11,7 @@ import { VoiceModule } from './voice/voice.module';
 import { ReportsModule } from './reports/reports.module';
 import { RoomsModule } from './rooms/rooms.module';
 import { CommunityModule } from './community/community.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { SupabaseModule } from './common/supabase/supabase.module';
 import { RedisModule } from './common/redis/redis.module';
 
@@ -49,6 +50,7 @@ import { RedisModule } from './common/redis/redis.module';
     ReportsModule,
     RoomsModule,
     CommunityModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

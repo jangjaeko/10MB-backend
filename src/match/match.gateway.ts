@@ -65,6 +65,9 @@ export class MatchGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const user = await this.authService.verifyToken(token);
       this.connectedUsers.set(client.id, user.userId);
 
+      // 알림 룸 조인 (NotificationsGateway에서 실시간 알림 발송에 사용)
+      await client.join(`notif:${user.userId}`);
+
       await this.usersService.setUserOnline(user.userId, true);
       console.log(`[WS] User ${user.userId} connected (${client.id})`);
     } catch {
